@@ -21,9 +21,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      TMPDIR: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
+      # Use the runner's inherited TEMP/TMP; runner.* is unavailable in job env.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -173,6 +173,6 @@ terminal windows and exercises the clipboard; it is for manual interactive use,
 not unattended CI.
 
 The packager uses an explicit runtime-file allowlist. Pushing a version tag that
-matches `plugin.json` (for example, `v1.0.1`) runs tests, builds a ZIP with
+matches `plugin.json` (for example, `v1.0.2`) runs tests, builds a ZIP with
 `plugin.json` at the root, and publishes it with a SHA-256 checksum. Once the plugin
 is listed, Flow's manifest updater can discover subsequent GitHub Releases.

@@ -5,7 +5,7 @@
     "Name": "SSH Launcher",
     "Description": "Open a terminal with an SSH session to a saved destination",
     "Author": "Vadim Funtikov",
-    "Version": "1.0.1",
+    "Version": "1.0.2",
     "MinimumAppVersion": "2.0.3",
     "Language": "Python_v2",
     "Website": "https://github.com/theatramors/Flow.Launcher.Plugin.SSHLauncher",
