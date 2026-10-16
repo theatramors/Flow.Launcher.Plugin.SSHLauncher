@@ -1,0 +1,14 @@
+{
+    "$schema": "https://www.flowlauncher.com/schemas/plugin.schema.json",
+    "ID": "8f3f0b1c-6d1e-4b8a-9a3f-1c5d7e2b4a90",
+    "ActionKeyword": "ssh",
+    "Name": "SSH Launcher",
+    "Description": "Open a terminal with an SSH session to a saved destination",
+    "Author": "Vadim Funtikov",
+    "Version": "1.0.1",
+    "MinimumAppVersion": "2.0.3",
+    "Language": "Python_v2",
+    "Website": "https://github.com/theatramors/Flow.Launcher.Plugin.SSHLauncher",
+    "IcoPath": "Images\\ssh.png",
+    "ExecuteFileName": "main.py"
+}

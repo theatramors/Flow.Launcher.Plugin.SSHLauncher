@@ -1,0 +1,84 @@
+name: Build, test and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python 3.11)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      TMPDIR: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Regression tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+      - name: JSON-RPC integration tests (no real SSH connections)
+        run: python tests/drive_rpc.py
+      - name: Clean release packaging tests
+        run: python tools/test_package.py
+      - name: Build release ZIP
+        run: python tools/package.py
+      - name: Test the extracted ZIP
+        run: python tools/smoke_release.py dist/Flow.Launcher.Plugin.SSHLauncher.zip
+      - name: Test with Flow's embedded Python runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:RUNNER_TEMP 'flow-python'
+          $archive = Join-Path $env:RUNNER_TEMP 'python-3.11.4-embed-amd64.zip'
+          Invoke-WebRequest https://www.python.org/ftp/python/3.11.4/python-3.11.4-embed-amd64.zip -OutFile $archive
+          Expand-Archive $archive -DestinationPath $runtime
+          python tools/smoke_release.py dist/Flow.Launcher.Plugin.SSHLauncher.zip --python "$runtime/python.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  release:
+    name: Publish release ZIP
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check release tag against manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python -c "import json, os; version=json.load(open('plugin.json'))['Version']; assert os.environ['RELEASE_TAG'] == 'v'+version, 'Tag does not match plugin.json'"
+      - name: Package and verify
+        run: |
+          python tools/package.py
+          python tools/smoke_release.py dist/Flow.Launcher.Plugin.SSHLauncher.zip
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            dist/Flow.Launcher.Plugin.SSHLauncher.zip \
+            dist/Flow.Launcher.Plugin.SSHLauncher.zip.sha256 \
+            --verify-tag --title "SSH Launcher $RELEASE_TAG" \
+            --notes-file RELEASE_NOTES.md --latest

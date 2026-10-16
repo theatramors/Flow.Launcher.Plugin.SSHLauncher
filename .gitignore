@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+logs/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+destinations.json
+destinations.json.*
+*.log
+*.zip
+.env
+.env.*
