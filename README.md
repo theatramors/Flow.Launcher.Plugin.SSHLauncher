@@ -38,7 +38,7 @@ are handled by OpenSSH in the terminal—not by the plugin.
 | --- | --- |
 | Open the selected connection | Enter |
 | Copy its SSH command (PowerShell syntax) | Ctrl+C |
-| Open the result context menu | Ctrl+O (or your configured context-menu shortcut) |
+| Open the result context menu | Ctrl+O or Shift+Enter (or your configured context-menu shortcut) |
 | Complete `ssh <alias>` | Flow's configured autocomplete shortcut (normally Ctrl+Tab) |
 
 The context menu offers Windows Terminal, PowerShell, Command Prompt, copy command,
@@ -105,15 +105,32 @@ A minimal example:
 - `icon`: optional local icon path or HTTP(S) icon URL. Remote icons are fetched by
   Flow Launcher; omit this setting to use the bundled icon without a remote fetch.
 
-Use JSON arrays for argument lists rather than a shell command string. The copied
-command uses **PowerShell syntax**, regardless of the selected terminal.
+Prefer JSON arrays for argument lists. `ssh_args` and `extra_ssh_args` also accept
+a single string: whitespace separates arguments, single or double quotes group text
+that contains spaces, and backslashes are ordinary characters, so Windows paths work
+unquoted. Use an array when an argument itself contains a quote character, such as
+a path with an apostrophe. The copied command uses **PowerShell syntax**,
+regardless of the selected terminal.
+
+Entries the plugin cannot use are not dropped silently. Each gets its own
+**Destination skipped** row with the reason, shown on the plain `ssh` query and when
+your search matches its alias; press Enter on it to open the file. This covers an
+entry without an alias or host, a duplicate alias, a `port` that is not a number or
+service name, `ssh_args` that is neither an array nor a string, and a `host` or
+`user` that starts with `-` or contains whitespace or control characters. The
+leading `-` rule is a safety rule: ssh would read the value as an option, and
+options such as `ProxyCommand` run local programs. The alias itself is only a
+label, so it may contain spaces or non-Latin letters.
 
 For safety, Windows Terminal mode refuses arguments or tab titles containing `;`
 (the separator for multiple Terminal actions). Command Prompt mode refuses literal
-`%` and double quotes inside arguments, which cannot be passed reliably through
-its parser. Use PowerShell for these remote commands. CR, LF and NUL characters
-are rejected in every terminal mode. Failed launches leave Flow open and record
-the reason in the local log.
+`%` and double quotes inside arguments, which cannot be passed reliably through its
+parser; use PowerShell for those remote commands. PowerShell mode refuses an
+argument that is exactly `--%`, which PowerShell drops however it is quoted; the
+copied command has the same limitation, so launch such a destination in Windows
+Terminal or Command Prompt. CR, LF and NUL characters are rejected in every terminal
+mode. A refused or failed launch leaves Flow open and logs which check failed (the
+terminal and the offending character), never the argument itself.
 
 Do not put passwords or tokens in this file. Treat configuration from other people as code:
 SSH supports options such as `ProxyCommand` that deliberately run local programs.
@@ -131,20 +148,29 @@ Host demo
 ```
 
 Imported destinations connect using the **alias**, leaving OpenSSH in charge of
-identity files, jump hosts, forwards, and other SSH options. A custom
-`ssh_config_path` is passed to OpenSSH using `-F`. JSON-defined destinations take
-precedence when an alias appears in both sources.
+identity files, jump hosts, forwards, and other SSH options. The configured
+`ssh_config_path` is always passed to OpenSSH with `-F` (the default
+`~/.ssh/config` included), so OpenSSH reads exactly that file. As with any `-F`,
+the system-wide `%ProgramData%\ssh\ssh_config` is not read for these connections.
+JSON-defined destinations take precedence when an alias appears in both sources.
 
 Alias discovery is not a complete OpenSSH parser. Wildcards and conditional blocks
 are not expanded into a list of hosts; OpenSSH remains the authority for resolving
-the selected connection.
+the selected connection. `Include` directives are not followed yet, so a host
+defined only in an included file is not listed. As a workaround, add a JSON
+destination whose `host` is that alias: it runs as plain `ssh <alias>`, which
+OpenSSH resolves through your normal config, `Include` lines included. Note that
+Windows OpenSSH (checked with 9.6p1) silently ignores `Include` paths that start
+with a drive letter, such as `C:/Users/...`; write them relative to `~/.ssh` or as
+`~/...` instead.
 
 ## Privacy and troubleshooting
 
 - The plugin does not collect telemetry or store SSH credentials.
 - It reads your destinations JSON and, when enabled, the specified SSH config.
-- Logs are written locally to `logs/ssh-launcher.log` inside the plugin folder;
-  logs, user configuration and tests are **not included in release ZIPs**.
+- Logs are written locally to `logs/ssh-launcher.log` inside the plugin folder.
+  Flow installs each plugin version in a new folder, so the log starts over after an
+  update. Logs, user configuration and tests are **not included in release ZIPs**.
 - Review diagnostics before sharing them: errors can contain local file paths.
 - Check that `ssh` works from a terminal first. If Windows Terminal is unavailable,
   set `terminal` to `powershell` or `cmd`.
@@ -173,6 +199,6 @@ terminal windows and exercises the clipboard; it is for manual interactive use,
 not unattended CI.
 
 The packager uses an explicit runtime-file allowlist. Pushing a version tag that
-matches `plugin.json` (for example, `v1.0.2`) runs tests, builds a ZIP with
+matches `plugin.json` (for example, `v1.0.3`) runs tests, builds a ZIP with
 `plugin.json` at the root, and publishes it with a SHA-256 checksum. Once the plugin
 is listed, Flow's manifest updater can discover subsequent GitHub Releases.

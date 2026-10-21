@@ -121,8 +121,91 @@ class CmdBackslashTest(unittest.TestCase):
         self.assertTrue(line.endswith(' -i "C:\\keys\\\\""'), line)
 
 
+class ArgumentStringTest(unittest.TestCase):
+    """Config values may be a list (documented) or one string (Windows rules)."""
+
+    def test_string_ssh_args_keep_windows_backslashes(self):
+        argv = launcher.ssh_argv(
+            {"alias": "a", "host": "h", "ssh_args": r"-i C:\keys\id_ed25519"}, {}
+        )
+        self.assertEqual(argv, ["ssh", "-i", "C:\\keys\\id_ed25519", "h"])
+
+    def test_quoted_string_arguments_group_a_path_with_spaces(self):
+        argv = launcher.ssh_argv(
+            {"alias": "a", "host": "h", "ssh_args": '-i "C:\\my keys\\id_rsa"'}, {}
+        )
+        self.assertEqual(argv, ["ssh", "-i", "C:\\my keys\\id_rsa", "h"])
+
+    def test_an_unbalanced_quote_does_not_break_the_command(self):
+        argv = launcher.ssh_argv({"alias": "a", "host": "h", "ssh_args": '-o "x'}, {})
+        self.assertEqual(argv, ["ssh", "-o", "x", "h"])
+
+    def test_global_extra_args_accept_a_string_too(self):
+        argv = launcher.ssh_argv(
+            {"alias": "a", "host": "h"}, {"extra_ssh_args": "-o ServerAliveInterval=30"}
+        )
+        self.assertEqual(argv, ["ssh", "-o", "ServerAliveInterval=30", "h"])
+
+
+class OptionLikeDestinationTest(unittest.TestCase):
+    """A destination that reads like an ssh option would run a local command."""
+
+    def test_host_that_looks_like_an_option_is_refused(self):
+        with self.assertRaises(launcher.UnsafeArgumentError):
+            launcher.ssh_argv({"alias": "a", "host": "-oProxyCommand=calc.exe"}, {})
+
+    def test_imported_alias_that_looks_like_an_option_is_refused(self):
+        with self.assertRaises(launcher.UnsafeArgumentError):
+            launcher.ssh_argv(
+                {"alias": "-oProxyCommand=calc.exe", "source": "ssh_config",
+                 "ssh_config_path": "~/.ssh/config"}, {}
+            )
+
+    def test_user_at_host_is_still_accepted(self):
+        self.assertEqual(
+            launcher.ssh_argv({"alias": "a", "host": "h.example", "user": "root"}, {}),
+            ["ssh", "root@h.example"],
+        )
+
+
+class PowerShellQuoteTest(unittest.TestCase):
+    def test_unicode_single_quotes_are_doubled_like_the_ascii_one(self):
+        argv = launcher.terminal_argv("powershell", ["ssh", "h", "echo it\u2019s"], {}, "t")
+        self.assertEqual(argv[3], "ssh h 'echo it\u2019\u2019s'")
+
+    def test_unicode_double_quotes_are_quoted(self):
+        argv = launcher.terminal_argv("powershell", ["ssh", "h", "\u201cx\u201d"], {}, "t")
+        self.assertEqual(argv[3], "ssh h '\u201cx\u201d'")
+
+    def test_the_stop_parsing_token_is_refused_because_powershell_drops_it(self):
+        with self.assertRaises(launcher.UnsafeArgumentError):
+            launcher.terminal_argv("powershell", ["ssh", "--%", "h"], {}, "t")
+        # Only the exact token: these reach the program unchanged (verified live).
+        argv = launcher.terminal_argv("powershell", ["ssh", "--%x", "x--%", "h"], {}, "t")
+        self.assertEqual(argv[3], "ssh --%x x--% h")
+
+    def test_other_terminals_still_pass_the_stop_parsing_token(self):
+        argv = launcher.terminal_argv("wt", ["ssh", "--%", "h"], {}, "t")
+        self.assertEqual(argv[-3:], ["ssh", "--%", "h"])
+
+    def test_a_leading_at_sign_is_quoted(self):
+        argv = launcher.terminal_argv("powershell", ["ssh", "h", "@args"], {}, "t")
+        self.assertEqual(argv[3], "ssh h '@args'")
+
+    def test_a_tilde_path_stays_unquoted_so_powershell_expands_it(self):
+        argv = launcher.terminal_argv(
+            "powershell", ["ssh", "-i", "~/.ssh/id_ed25519", "h"], {}, "t"
+        )
+        self.assertEqual(argv[3], "ssh -i ~/.ssh/id_ed25519 h")
+
+    def test_the_copied_command_uses_the_same_escaping(self):
+        line = launcher.ssh_command_line(["ssh", "h", "echo it\u2019s"])
+        self.assertEqual(line, "ssh h 'echo it\u2019\u2019s'")
+
+
 class SpawnLogTest(unittest.TestCase):
     def test_spawn_logs_the_program_it_started(self):
+
         messages = []
         log = mock.Mock()
         log.info = messages.append

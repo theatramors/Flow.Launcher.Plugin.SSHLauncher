@@ -76,6 +76,9 @@ def main():
             "destinations": [
                 {"alias": "pve", "host": "192.0.2.10", "user": "root", "description": "Proxmox node"},
                 {"alias": "nas", "host": "192.0.2.50", "user": "admin", "port": 2222},
+                # ssh_args as one string: backslashes must survive the split.
+                {"alias": "winbox", "host": "192.0.2.77", "user": "ops",
+                 "ssh_args": "-i C:\\keys\\id_rsa -o StrictHostKeyChecking=yes"},
                 {"alias": "broken"},
                 "not-a-dict",
             ],
@@ -147,7 +150,7 @@ def main():
     all_rows = by_id.get(2, {}).get("result", {}).get("result", [])
     titles = [row.get("Title") for row in all_rows]
     check("empty query lists every destination in config order",
-          titles[:3] == ["pve", "nas", "homeserver"], str(titles))
+          titles[:4] == ["pve", "nas", "winbox", "homeserver"], str(titles))
     check("ssh config host is listed with its port line",
           any(row.get("Title") == "homeserver" for row in all_rows))
     check("edit row is offered", "Edit destinations file" in titles, str(titles))
@@ -164,6 +167,13 @@ def main():
     check("CopyText carries the ssh command",
           pve.get("CopyText", "").startswith("ssh -o ServerAliveInterval=30 root@192.0.2.10"))
     check("result rows are non-empty", len(all_rows) >= 4, str(titles))
+    winbox = next((row for row in all_rows if row.get("Title") == "winbox"), {})
+    check("string ssh_args keep Windows backslashes and split on spaces",
+          "-i C:\\keys\\id_rsa -o StrictHostKeyChecking=yes ops@192.0.2.77" in winbox.get("SubTitle", ""),
+          winbox.get("SubTitle", ""))
+    check("a broken entry becomes its own row, not a dead list",
+          sum(1 for title in titles if title.startswith("Destination skipped")) == 2, str(titles))
+
     check("icons are absolute paths inside the plugin",
           bool(all_rows) and all(os.path.isabs(row.get("IcoPath", "")) and PLUGIN_DIR in row.get("IcoPath", "")
                                  for row in all_rows), str([row.get("IcoPath") for row in all_rows]))
@@ -183,7 +193,11 @@ def main():
     none_rows = by_id.get(5, {}).get("result", {}).get("result", [])
     check("no match returns one helpful row",
           len(none_rows) == 1 and none_rows[0].get("Title", "").startswith("No destination matching"),
-          str(none_rows))
+          str([row.get("Title") for row in none_rows]))
+    check("each skipped entry says why (empty query)",
+          sum(1 for row in all_rows if "no alias or host" in row.get("SubTitle", "")) == 1
+          and sum(1 for row in all_rows if "not an object" in row.get("SubTitle", "")) == 1,
+          str([row.get("SubTitle") for row in all_rows]))
 
     menu = by_id.get(6, {}).get("result", {}).get("result", [])
     menu_titles = [row.get("Title") for row in menu]

@@ -1,3 +1,29 @@
+## What's new in v1.0.3
+
+**Fixes**
+
+- `ssh_args` and `extra_ssh_args` written as one string keep Windows backslashes:
+  `-i C:\keys\id_ed25519` no longer turns into `C:keysid_ed25519`. Quotes group
+  text with spaces; an unbalanced quote no longer breaks the plugin.
+- One broken destination no longer hides all the others. Each unusable entry gets
+  its own **Destination skipped** row with the reason; press Enter on it to open the
+  destinations file.
+- A `host` or `user` that starts with `-` is refused, so a config value can no
+  longer be read by ssh as an option such as `ProxyCommand`. Aliases may now
+  contain spaces and non-Latin letters.
+- PowerShell quoting handles the Unicode quote characters PowerShell treats as
+  string delimiters, and PowerShell mode refuses an argument that is exactly `--%`,
+  which PowerShell drops however it is quoted.
+- A refused launch logs which check failed (terminal and character), never the
+  argument itself.
+
+**Documentation**
+
+- README corrected: `-F` is passed for every imported alias (so the system-wide
+  OpenSSH config is not read for them), `Include` is not followed yet (with a
+  workaround), logs restart after a plugin update, Shift+Enter opens the context
+  menu.
+
 ## SSH Launcher
 
 Launch an SSH session from Flow Launcher by typing `ssh <alias>`.

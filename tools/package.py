@@ -18,6 +18,7 @@ RELEASE_FILES = (
     'Images/ssh.png',
     'Images/settings.png',
     'ssh_launcher/__init__.py',
+    'ssh_launcher/arguments.py',
     'ssh_launcher/config.py',
     'ssh_launcher/launcher.py',
     'ssh_launcher/logging_setup.py',

@@ -60,11 +60,14 @@ class Plugin(object):
         self.log = log
         self.plugin_dir = plugin_dir
         self.settings_dir = None
-        # (dependencies, settings, destinations, error); dependencies cover
-        # destinations.json *and* the ssh config, so an edit to either applies
-        # without a restart.
+        # (dependencies, settings, destinations, error, problems); dependencies
+        # cover destinations.json *and* the ssh config, so an edit to either
+        # applies without a restart.
         self._cache = None
         self._ssh_config_path = None
+        # {"alias", "message"} for every entry that was skipped; shown as
+        # result rows so a broken entry no longer silently disappears.
+        self.problems = []
 
     # ------------------------------------------------------------------ setup
 
@@ -90,13 +93,15 @@ class Plugin(object):
     def _load(self, force=False):
         """Return (settings, destinations, error); the config is re-read when
         destinations.json or the ssh config changed on disk, so edits apply
-        without a restart."""
+        without a restart.  Skipped entries land in ``self.problems``."""
         path = self.path()
         dependencies = self._dependencies()
         if not force and self._cache is not None and self._cache[0] == dependencies:
+            self.problems = self._cache[4]
             return self._cache[1], self._cache[2], self._cache[3]
 
-        settings, destinations, error = config_module.load(path, self.log)
+        problems = []
+        settings, destinations, error = config_module.load(path, self.log, problems)
         self._ssh_config_path = None
         if settings.get("include_ssh_config"):
             configured = {dest["alias"].lower() for dest in destinations}
@@ -107,7 +112,8 @@ class Plugin(object):
             if configured_path:
                 self._ssh_config_path = os.path.expanduser(configured_path)
         # Recompute after loading: the ssh config path may have changed.
-        self._cache = (self._dependencies(), settings, destinations, error)
+        self._cache = (self._dependencies(), settings, destinations, error, problems)
+        self.problems = problems
         self.log.info("loaded %d destinations" % len(destinations))
         return settings, destinations, error
 
@@ -188,11 +194,36 @@ class Plugin(object):
         # list keeps the order of the config file, so the file decides the order.
         matches.sort(key=lambda item: -item[0])
 
+        matched = 0
         for score, dest in matches:
-            results.append(self._result_for(dest, score, settings))
+            # One unusable destination must not cost the user every other row:
+            # it is reported on its own instead of aborting the whole query.
+            try:
+                results.append(self._result_for(dest, score, settings))
+                matched += 1
+            except launcher.UnsafeArgumentError:
+                self.log.warn("skipped a destination that cannot be launched safely")
+                results.append(self._skipped_row(
+                    dest.get("alias"),
+                    "This destination cannot be launched as configured; press Enter to fix it.",
+                ))
+            except Exception:
+                self.log.error("cannot build a result:\n%s" % traceback.format_exc())
+                results.append(self._skipped_row(
+                    dest.get("alias"),
+                    "The ssh command for this destination could not be built; see the plugin log.",
+                ))
+
+        # Skipped entries are listed on the empty query, and on a search that
+        # matches their alias - not on every unrelated keystroke.
+        for problem in self.problems:
+            alias = problem.get("alias") or ""
+            if not text or (alias and matcher.score_text(text, alias) >= matcher.MIN_SCORE):
+                results.append(self._skipped_row(alias, problem.get("message", "")))
 
         edit_score = matcher.score_text(text, EDIT_ROW_TEXT)
-        if not text or edit_score >= 20:
+        edit_shown = not text or edit_score >= 20
+        if edit_shown:
             results.append(
                 {
                     "Title": EDIT_ROW_TITLE,
@@ -204,7 +235,7 @@ class Plugin(object):
                 }
             )
 
-        if not results:
+        if text and not matched and not edit_shown:
             results.append(
                 {
                     "Title": "No destination matching \u201c%s\u201d" % text,
@@ -216,6 +247,18 @@ class Plugin(object):
                 }
             )
         return {"result": results, "debugMessage": ""}
+
+    def _skipped_row(self, alias, message):
+        """A row for an entry that could not be used; Enter opens the file."""
+        alias = str(alias or "").strip()
+        return {
+            "Title": "Destination skipped" + (": %s" % alias if alias else ""),
+            "SubTitle": message,
+            "IcoPath": self.icon(CONFIG_ICON),
+            "Score": 98,
+            "JsonRPCAction": {"Method": "edit_config", "Parameters": []},
+            "ContextData": CONFIG_CONTEXT,
+        }
 
     def context_menu(self, data):
         try:
@@ -310,14 +353,15 @@ class Plugin(object):
         settings, _, _ = self._load()
         chosen = terminal or dest.get("terminal") or settings.get("terminal")
         terminal_name = launcher.resolve_terminal(chosen, self.log)
-        ssh_list = launcher.ssh_argv(dest, settings)
         try:
+            ssh_list = launcher.ssh_argv(dest, settings)
             argv = launcher.terminal_argv(terminal_name, ssh_list, settings, dest["alias"])
             launcher.spawn(argv, launcher._needs_new_console(terminal_name), self.log)
         except launcher.UnsafeArgumentError as exc:
-            # Keep the launcher open so the row stays visible and the message
-            # in the log is reachable, instead of silently doing nothing.
-            self.log.error("cannot launch destination: %s" % exc)
+            # Keep the launcher open so the row stays visible.  Log which check
+            # failed; the full message is not logged because it quotes the
+            # configured command.
+            self.log.error("cannot launch destination: %s" % exc.reason)
             return {"hide": False}
         except Exception as exc:
             self.log.error("cannot start terminal: %s" % exc)
@@ -332,7 +376,11 @@ class Plugin(object):
             self.log.warn("copy_command: unknown alias")
             return {"hide": False}
         settings, _, _ = self._load()
-        command = launcher.ssh_command_line(launcher.ssh_argv(dest, settings))
+        try:
+            command = launcher.ssh_command_line(launcher.ssh_argv(dest, settings))
+        except launcher.UnsafeArgumentError:
+            self.log.error("copy_command: the destination cannot be used safely")
+            return {"hide": False}
         if not launcher.set_clipboard(command):
             self.log.warn("clipboard copy failed")
             return {"hide": False}

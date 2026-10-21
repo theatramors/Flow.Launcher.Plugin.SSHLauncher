@@ -98,3 +98,16 @@ class WindowsTerminalIntegrationTest(unittest.TestCase):
             ["powershell.exe", "-NoProfile", "-Command", command]
         )
         self.assertEqual(delivered, argv[1:], "powershell command was %r" % (command,))
+
+    def test_powershell_delivers_an_argument_holding_unicode_quotes(self):
+        # PowerShell also treats U+2018-U+201B as string delimiters; before the
+        # fix they ended the quoted argument early and the rest ran as code.
+        argv = [sys.executable, self.stub, "echo it\u2019s \u201cquoted\u201d", "plain",
+                "\u201cbare\u201d", "--%x", "\u2018single\u2019"]
+        built = launcher.terminal_argv("powershell", list(argv), {}, "stub")
+        command = built[3]
+        delivered = self._run_and_read(
+            ["powershell.exe", "-NoProfile", "-Command", command]
+        )
+        self.assertEqual(delivered, argv[1:], "powershell command was %r" % (command,))
+

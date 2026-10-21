@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import subprocess
 
+from .arguments import is_safe_endpoint, split_arguments
 from .matcher import target_of
 
 TERMINALS = {
@@ -27,6 +27,12 @@ _CREATED_FLAG = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 _DETACHED_FLAGS = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
     subprocess, "CREATE_NEW_PROCESS_GROUP", 0
 )
+
+# Characters PowerShell treats as syntax outside a single-quoted string.  It
+# also accepts the Unicode single (U+2018-U+201B) and double (U+201C-U+201E)
+# quotes as string delimiters.
+_PS_SINGLE_QUOTES = re.compile("['\u2018\u2019\u201a\u201b]")
+_PS_SPECIAL = re.compile("[\\s'\"`$&|<>^();,{}\u2018-\u201e]")
 
 
 def resolve_terminal(value, log=None):
@@ -52,25 +58,39 @@ def ssh_argv(dest, settings):
     """
     exe = str(settings.get("ssh") or "ssh").strip() or "ssh"
     argv = [exe]
-    extra = settings.get("extra_ssh_args") or []
-    if isinstance(extra, str):
-        extra = shlex.split(extra)
-    argv.extend(str(a) for a in extra)
-    per_destination = dest.get("ssh_args") or []
-    if isinstance(per_destination, str):
-        per_destination = shlex.split(per_destination)
-    argv.extend(str(a) for a in per_destination)
+    # Config strings are split with backslashes kept literal; a POSIX split
+    # silently ate C:\keys\id_ed25519.
+    argv.extend(split_arguments(settings.get("extra_ssh_args")))
+    argv.extend(split_arguments(dest.get("ssh_args")))
     if str(dest.get("source") or "") == "ssh_config":
         config_path = str(dest.get("ssh_config_path") or "").strip()
         if config_path:
             argv.extend(["-F", os.path.expanduser(config_path)])
+        _reject_option_like(dest.get("alias"), "alias")
         argv.append(str(dest.get("alias") or ""))
         return _append_remote_command(argv, dest)
     port = dest.get("port")
     if port not in (None, "", 0, "0") and str(port) != "22":
         argv.extend(["-p", str(port)])
+    _reject_option_like(target_of(dest), "destination")
     argv.append(target_of(dest))
     return _append_remote_command(argv, dest)
+
+
+def _reject_option_like(value, field):
+    """A destination reading like ``-oProxyCommand=...`` must never reach ssh.
+
+    ssh takes any argument starting with ``-`` as an option, so a config value
+    could otherwise ask it to run a local command (``ProxyCommand``).  The
+    config loader already drops such entries; this is the last line of defence.
+    """
+    if not is_safe_endpoint(value):
+        raise UnsafeArgumentError(
+            "refusing to launch: the %s is not a plain host name (it is empty, "
+            "starts with '-', or contains whitespace or shell syntax). Fix the "
+            "destination in the plugin settings file." % field,
+            reason="the %s is not a plain host name" % field,
+        )
 
 
 def _append_remote_command(argv, dest):
@@ -102,8 +122,11 @@ def ssh_command_line(argv):
 def _powershell_quote(arg):
     if arg == "":
         return "''"
-    if re.search(r"[\s'\"`$&|<>^();,]", arg):
-        return "'" + arg.replace("'", "''") + "'"
+    # The Unicode single quotes are doubled like the ASCII one.  A leading
+    # '@'/'#' starts special syntax (splat, hash literal, comment) and is
+    # quoted for the same reason.
+    if _PS_SPECIAL.search(arg) or arg[0] in "@#":
+        return "'" + _PS_SINGLE_QUOTES.sub(lambda m: m.group(0) * 2, arg) + "'"
     return arg
 
 
@@ -130,7 +153,15 @@ class RawCommandLine(str):
 
 
 class UnsafeArgumentError(ValueError):
-    """An argument the target terminal cannot carry without risking injection."""
+    """An argument the target terminal cannot carry without risking injection.
+
+    ``reason`` names the check that failed - terminal and character, or field -
+    without the argument value, so it is safe for the shared log.
+    """
+
+    def __init__(self, message, reason="unsafe argument"):
+        ValueError.__init__(self, message)
+        self.reason = reason
 
 
 # Characters a terminal's *own* command-line parser treats as syntax and that
@@ -142,21 +173,35 @@ _TERMINAL_UNSAFE = {
     "cmd": ("%", '"'),  # % expands; a literal quote is not reliably escapable
 }
 _UNSAFE_CONTROL = ("\r", "\n", "\x00")
+# Whole arguments a terminal drops or reinterprets no matter how they are
+# quoted.  PowerShell (5.1 and 7) removes an argument whose value is exactly
+# '--%' (its stop-parsing token) even when quoted or passed from a variable -
+# verified with an argv stub in tests/test_windows_command_line.py.
+_TERMINAL_UNSAFE_TOKENS = {
+    "powershell": ("--%",),
+}
 
 
 def _reject_unsafe(terminal, arguments):
     unsafe = _UNSAFE_CONTROL + _TERMINAL_UNSAFE.get(terminal, ())
-    if not unsafe:
-        return
+    tokens = _TERMINAL_UNSAFE_TOKENS.get(terminal, ())
     for argument in arguments:
         text = str(argument)
+        if text in tokens:
+            raise UnsafeArgumentError(
+                "refusing to launch in %s: that terminal drops the argument %r "
+                "however it is quoted. Choose a different terminal for this "
+                "destination." % (terminal, text),
+                reason="%s drops the argument %r" % (terminal, text),
+            )
         for char in unsafe:
             if char in text:
                 raise UnsafeArgumentError(
                     "refusing to launch in %s: the argument %r contains %r, which that "
                     "terminal resolves as command-line syntax and which cannot be escaped "
                     "safely. Remove it or choose a different terminal for this "
-                    "destination." % (terminal, text, char)
+                    "destination." % (terminal, text, char),
+                    reason="%s cannot carry the character %r" % (terminal, char),
                 )
 
 

@@ -8,6 +8,8 @@ import os
 import shutil
 import time
 
+from .arguments import is_safe_endpoint, is_safe_label, is_safe_port, split_arguments
+
 CONFIG_NAME = "destinations.json"
 PLUGIN_NAME = "SSH Launcher"
 SETTINGS_RELATIVE = os.path.join("FlowLauncher", "Settings", "Plugins", PLUGIN_NAME)
@@ -43,6 +45,7 @@ README_LINES = [
     "  port          optional - non-22 port becomes -p <port>",
     "  description   optional - shown in the result subtitle",
     "  ssh_args      optional - list of extra ssh arguments, e.g. ['-i','C:/keys/id_ed25519']",
+    "                  (one string also works: spaces separate, quotes group, \\ is literal)",
     "  command       optional - command or list of arguments to run remotely",
     "  terminal      optional - override the default terminal for this destination",
     "  icon          optional - png/ico path or URL shown instead of the default icon",
@@ -105,33 +108,124 @@ def write_default(path):
     return data
 
 
-def _normalise_destination(item, alias_hint=None, log=None):
+def _note(problems, message, alias=""):
+    """Record a user-facing problem.
+
+    Kept out of the log on purpose: it names the destination, and the log is
+    pasted into public bug reports.  ``alias`` only titles the result row for a
+    destination that was skipped.
+    """
+    if problems is not None:
+        problems.append({"alias": str(alias or ""), "message": message})
+
+
+def _entry_label(alias, index):
+    alias = str(alias or "").strip()
+    return "'%s'" % alias if alias else "entry #%d" % (index + 1)
+
+
+def _normalise_destination(item, log=None, problems=None, index=0):
+    """Validate one destination.
+
+    Returns the normalised dict, or ``None`` when the entry cannot be used.
+    Argument strings are split here, once, so a malformed entry is reported as
+    one "skipped" row instead of breaking every other result at query time.
+    """
+    label = _entry_label(item.get("alias") if isinstance(item, dict) else None, index)
     if not isinstance(item, dict):
         if log:
             # Entry contents may hold hosts and users: keep the log generic.
             log.warn("ignoring destination entry that is not an object")
+        _note(problems, "%s in %s is not an object and was skipped" % (label, CONFIG_NAME))
         return None
 
     dest = dict(item)
-    alias = dest.get("alias") or alias_hint
+    alias = dest.get("alias")
     host = dest.get("host") or dest.get("hostname")
     if not alias or not host:
         if log:
             log.warn("ignoring destination without alias/host")
+        _note(problems, "%s in %s has no alias or host and was skipped" % (label, CONFIG_NAME),
+              alias)
         return None
 
-    dest["alias"] = str(alias).strip()
-    dest["host"] = str(host).strip()
-    if dest.get("user"):
-        dest["user"] = str(dest["user"]).strip()
-    if dest.get("port") in ("", 0):
+    alias = str(alias).strip()
+    host = str(host).strip()
+    user = str(dest.get("user")).strip() if dest.get("user") else ""
+    dest["alias"] = alias
+    dest["host"] = host
+    if user:
+        dest["user"] = user
+    else:
+        dest.pop("user", None)
+
+    # The alias is only a label for JSON entries (ssh gets user@host), so it
+    # may hold spaces or Cyrillic; host and user are real ssh arguments.
+    checks = (("alias", alias, is_safe_label), ("host", host, is_safe_endpoint),
+              ("user", user, is_safe_endpoint))
+    for field, value, is_safe in checks:
+        if value and not is_safe(value):
+            if log:
+                # Field name only: the value may hold a host name or a path.
+                log.warn("ignoring a destination with an unsafe %s value" % field)
+            _note(
+                problems,
+                "%s in %s was skipped: the %s value %r contains whitespace or control "
+                "characters, or starts with '-', which ssh would read as an option."
+                % (label, CONFIG_NAME, field, value),
+                alias,
+            )
+            return None
+
+    port = dest.get("port")
+    if port in (None, "", 0, "0"):
         dest["port"] = None
+    elif not is_safe_port(port):
+        if log:
+            log.warn("ignoring a destination with an unsafe port value")
+        _note(
+            problems,
+            "%s in %s was skipped: %r is not a port number or service name."
+            % (label, CONFIG_NAME, str(port)),
+            alias,
+        )
+        return None
+    else:
+        dest["port"] = str(port).strip()
+
+    raw_args = dest.get("ssh_args")
+    if raw_args in (None, "", []):
+        dest.pop("ssh_args", None)
+    elif not isinstance(raw_args, (str, list, tuple)):
+        if log:
+            log.warn("ignoring a destination whose ssh_args is not a list or string")
+        _note(
+            problems,
+            "%s in %s was skipped: ssh_args must be a list or a string." % (label, CONFIG_NAME),
+            alias,
+        )
+        return None
+    else:
+        dest["ssh_args"] = split_arguments(raw_args, log)
+
+    command = dest.get("command")
+    if isinstance(command, (list, tuple)):
+        dest["command"] = [str(part) for part in command if part is not None]
+    elif command in (None, ""):
+        dest.pop("command", None)
+    elif not isinstance(command, str):
+        dest["command"] = str(command)
+
     dest["source"] = "config"
     return dest
 
 
-def parse_config(data, log=None):
-    """Return (settings, destinations) from raw config data."""
+def parse_config(data, log=None, problems=None):
+    """Return (settings, destinations) from raw config data.
+
+    ``problems`` - when given, a list - collects one human-readable sentence for
+    every entry that was skipped, so the plugin can show them as result rows.
+    """
     settings = dict(DEFAULT_SETTINGS)
     if isinstance(data, dict):
         raw_settings = data.get("settings")
@@ -153,23 +247,20 @@ def parse_config(data, log=None):
 
     destinations = []
     seen = set()
-    for item, hint in _iter_with_hints(raw_destinations):
-        dest = _normalise_destination(item, hint, log)
+    for index, item in enumerate(raw_destinations):
+        dest = _normalise_destination(item, log, problems, index)
         if dest is None:
             continue
         key = dest["alias"].lower()
         if key in seen:
             if log:
                 log.warn("duplicate destination alias ignored")
+            _note(problems, "%s appears more than once in %s and was skipped"
+                  % (_entry_label(dest["alias"], index), CONFIG_NAME), dest["alias"])
             continue
         seen.add(key)
         destinations.append(dest)
     return settings, destinations
-
-
-def _iter_with_hints(items):
-    for item in items:
-        yield item, None
 
 
 def _split_config_line(line):
@@ -273,10 +364,11 @@ def read_ssh_config(settings, log=None):
     return unique
 
 
-def load(path, log=None):
+def load(path, log=None, problems=None):
     """Read the config file (creating it when missing).
 
-    Returns (settings, destinations, error_message).
+    Returns (settings, destinations, error_message).  ``problems`` (a list, when
+    given) receives one sentence per skipped entry.
     """
     error = None
     if not os.path.isfile(path):
@@ -298,5 +390,5 @@ def load(path, log=None):
                 log.error("cannot parse the destinations file: %s" % exc)
             return dict(DEFAULT_SETTINGS), [], "%s is not valid JSON: %s" % (CONFIG_NAME, exc)
 
-    settings, destinations = parse_config(data, log)
+    settings, destinations = parse_config(data, log, problems)
     return settings, destinations, error
